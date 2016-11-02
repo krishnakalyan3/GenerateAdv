@@ -16,7 +16,7 @@ For generating adversarial examples from a pretrained CNN on cifar10. The pretra
 <div class="highlight highlight-source-shell"><pre>python genAdv.py -m LBFGS -d cifar10 -n Cifar_pretrained_CudaConvVersion.pkl</pre></div>
 
 
-<h3> Reference </h3>:
+<h3> Reference </h3>
 <ol type="1">
   <li>Szegedy, Christian, et al. "Intriguing properties of neural networks." arXiv preprint arXiv:1312.6199 (2013).</li>
   <li>Goodfellow, Ian J., Jonathon Shlens, and Christian Szegedy. "Explaining and harnessing adversarial examples." arXiv preprint arXiv:1412.6572 (2014).</li>
