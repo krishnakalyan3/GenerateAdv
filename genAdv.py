@@ -151,7 +151,6 @@ def LBFGS(net, X, y, Mean_pixel,  object_fun=objective, dataset_type=None):
     print('Generating adversarial examples by LBFGS')
     factr = 10.0
     pgtol = 1e-05
-
     distortion = []
     output_x = []
     outputVals = []
