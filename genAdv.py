@@ -17,54 +17,10 @@ from scipy.optimize import fmin_l_bfgs_b as cnstOpt
 import matplotlib.pyplot as plt
 import getopt
 import urllib
+import load_data as ldb
 
 
-def load_cifar_dataset(Normal_flag = False):
-
-    cifar_dir = 'cifar-10-batches-py'
-    if not os.path.isdir(cifar_dir):
-        print("Downloading...")
-        urllib.urlretrieve("http://www.cs.toronto.edu/~kriz/cifar-10-python.tar.gz", "cifar-10-python.tar.gz")
-        print("Extracting Files")
-        os.system("tar xzvf cifar-10-python.tar.gz")
-
-
-    # Load training set
-    labels = []
-    all_data=[pickle.load(open('cifar-10-batches-py/data_batch_'+str(i+1),'rb')) for i in range(5)]
-    imgs = np.vstack([data.get('data') for data in all_data])
-    X = imgs.reshape(50000,3,32,32)
-    # convert pixel values to range [0,1]
-    X = X/np.float32(256)
-    for data in all_data:
-        x = data.get('labels')
-        labels.append(x)
-    Y = (np.array(labels, dtype='uint8')).flatten()
-
-    # Normalize training images
-    if Normal_flag == True:
-        mean_pixel = np.mean(X, axis=0)
-        X-= mean_pixel
-        print('Normalized training samples')
-    X_train = X
-    Y_train = Y
-
-    # Load test set
-    test_dic =pickle.load(open('cifar-10-batches-py/test_batch','rb'))
-    X_test = test_dic.get('data')
-    X_test=X_test.reshape(10000,3,32,32)
-    X_test = X_test/ np.float32(256)
-    y_test = test_dic.get('labels')
-    y_test = (np.array(y_test, dtype='uint8')).flatten()
-
-    if Normal_flag==True:
-        X_test -= mean_pixel
-        print('Normalized test samples based on training pixel mean\n')
-
-    return X_train, Y_train, X_test, y_test, mean_pixel
-
-
-def CudaConv_CNNcifar10(input_var=None, num_chan=3 ,width=32,num_fill = None, num_outputs=None):
+def CudaConv_CNN(input_var=None, num_chan=3 ,width=32,num_fill = None, num_outputs=None):
     print('Architecture and hyper-parameters are selected from '+str('https://code.google.com/p/cuda-convnet/source/browse/trunk/example-layers/layer-params-18pct.cfg'))
 
     # Input Layer
@@ -93,20 +49,26 @@ def CudaConv_CNNcifar10(input_var=None, num_chan=3 ,width=32,num_fill = None, nu
 
 
 def Load_weights(Pretrained_net, dataset_type):
-
+    num_filter = [32, 32, 64]
     if dataset_type=='cifar10':
         print('load cifar10 dataset')
         size_images = 32
         num_channel = 3
-        X_train, y_train, X_test, y_test, meanpixel = load_cifar_dataset(Normal_flag=True)
         num_classes = 10
-        num_filter = [32, 32, 64]
+        X_train, y_train, X_test, y_test, meanpixel = ldb.load_cifar_dataset(Normal_flag=True)
+
+    elif dataset_type == 'mnist':
+        size_images = 28
+        num_channel = 1
+        num_classes = 10
+        X_train, y_train, X_val, y_val, X_test, y_test = ldb.load_MNIST_dataset()
+        meanpixel = np.zeros(X_train[0].shape)
 
     input_var = T.tensor4('inputs', dtype='float32')
     target_var = T.ivector('targets')
 
     # create CNN
-    network = CudaConv_CNNcifar10(input_var=input_var, num_chan=num_channel, width=size_images, num_fill=num_filter, num_outputs=num_classes)
+    network = CudaConv_CNN(input_var=input_var, num_chan=num_channel, width=size_images, num_fill=num_filter, num_outputs=num_classes)
 
     test_prediction = lasagne.layers.get_output(network, deterministic=True)
     test_loss = lasagne.objectives.categorical_crossentropy(test_prediction,target_var)
@@ -147,10 +109,11 @@ def objective(r, *args):
     return obj, grad.flatten()
 
 
-def LBFGS(net, X, y, Mean_pixel,  object_fun=objective, dataset_type=None):
+def LBFGS(net, X, y, Mean_pixel,  object_fun=objective, dataset_type=None, selected_sample =None):
     print('Generating adversarial examples by LBFGS')
     factr = 10.0
     pgtol = 1e-05
+
     distortion = []
     output_x = []
     outputVals = []
@@ -164,7 +127,9 @@ def LBFGS(net, X, y, Mean_pixel,  object_fun=objective, dataset_type=None):
         print('sample {}'.format(i))
         base = X[i:i + 1].copy()
         orig_label = y[i:i + 1].copy()
+        # Initialization of distortion
         initial = np.ones(base.shape, dtype='float') * 1e-20
+        # Since -mean <base< 1-mean ==> -mean <base+r< 1-mean. So lower bound and upper bound for distortion are as follows:
         lwr_bnd = -base - Mean_pixel
         upr_bnd =  - base +1-Mean_pixel
         bound = zip(lwr_bnd.flatten(), upr_bnd.flatten())
@@ -176,8 +141,8 @@ def LBFGS(net, X, y, Mean_pixel,  object_fun=objective, dataset_type=None):
             if fool_target != orig_label:
                 print('Selected target {}, true target {}'.format(fool_target,orig_label))
                 break
-        print('Real label{}'.format(orig_label[0]))
-        print('selected fool label{}'.format(fool_target))
+        print('Real label{}\t'.format(orig_label[0]))
+        print('selected fool label{}\t'.format(fool_target[0]))
         C = 3
         x, f, d = cnstOpt(object_fun, x0=initial.flatten().astype('float'),
                           args=(net, base, fool_target, C),
@@ -193,24 +158,8 @@ def LBFGS(net, X, y, Mean_pixel,  object_fun=objective, dataset_type=None):
         distortion.append(Ec_dist)
         print("Magnitude of distortion {:.6f}\n".format(Ec_dist))
         output_x.append(x.reshape(base.shape) + base)
-
-        # for plot adversarial example and its corresponding clean sample, then their difference
-        #
-        """
-        plt.subplot(3,1,1)
-        plt.imshow((base[0]+Mean_pixel).transpose(1,2,0))
-        plt.axis('off')
-        plt.subplot(3, 1,2)
-        plt.imshow(((x.reshape(base.shape) + base)[0]+Mean_pixel).transpose(1,2,0))
-        plt.axis('off')
-        plt.subplot(3, 1,3)
-        plt.imshow((x.reshape(base.shape)[0]).transpose(1,2,0))
-        plt.axis('off')
-        plt.savefig(os.path.join('Images_cifar', 'adv'+str(i)+' C='+str('{:.2f}'.format(C))+'.jpg'))
-        plt.close()
-        """
         output_y.append(orig_label)
-        indx.append(i)
+        indx.append(selected_sample[i])
         estimated_prediction = np.vstack(np.asarray(outputVals, dtype='float32'))
         print("Avg distortion {:.3f} AVG confidence {:.6f} \n".format(np.mean(distortion),
                                                                           np.mean(np.max(estimated_prediction,axis=1), axis=0)))
@@ -221,7 +170,7 @@ def LBFGS(net, X, y, Mean_pixel,  object_fun=objective, dataset_type=None):
 
 
 def FastSign( net_info, X, Y, dataset_type=None):
-    print('Generating adversarial examples by Fast gradient sign method')
+    print('Generating adversarial examples by FastSign gradient method')
     fun_grad = net_info['grad']
     p_softmax = net_info['predict']
     output_x = []
@@ -284,13 +233,13 @@ def main(argv):
 
     net, X_train, y_train, X_test, y_test, pixelmean = Load_weights(Pretrained_net, dataset_type=data)
     # Randomly select 100 samples from test set and save in a pkl file for reproduction purpose
-    indx = np.random.choice(range(len(X_test)),100)
-    pickle.dump(indx, open('index_1000_Selected_Testsamples.pkl','wb'), protocol=pickle.HIGHEST_PROTOCOL)
+    indx = np.random.choice(range(len(X_test)),10000)
+    pickle.dump(indx, open('index_10000_Selected_Testsamples_'+data+'.pkl','wb'), protocol=pickle.HIGHEST_PROTOCOL)
     # indx = pickle.load(open('Selected_samples_index.pkl','rb'))
     X = X_test[indx]
     Y = y_test[indx]
     if gener_method =='LBFGS':
-        LBFGS(net, X, Y, Mean_pixel=pixelmean,  object_fun=objective, dataset_type=data)
+        LBFGS(net, X, Y, Mean_pixel=pixelmean,  object_fun=objective, dataset_type=data, selected_sample=indx)
     elif gener_method == 'FastSign':
         FastSign(net, X,Y, dataset_type=data)
 
